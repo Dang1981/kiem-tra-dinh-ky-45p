@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dashboard Giám Sát Thi P2P - Thầy Nguyễn Hoàng Hải Đăng</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+  <!-- SheetJS để xuất file Excel chuẩn -->
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.1/package/dist/xlsx.full.min.js"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen p-3 flex flex-col">
+
+  <!-- HEADER ĐIỀU KHIỂN & XUẤT BẢNG ĐIỂM -->
+  <header class="bg-slate-900 border border-slate-800 rounded-xl p-3 mb-3 flex flex-wrap justify-between items-center gap-2 shadow-lg">
+    <div>
+      <h1 class="text-sm sm:text-base font-black text-indigo-400 uppercase tracking-tight flex items-center gap-2">
+        <span class="w-3 h-3 rounded-full bg-emerald-500 animate-pulse"></span>
+        HỆ THỐNG GIÁM SÁT THI TRỰC TUYẾN P2P SERVERLESS (46 HỌC SINH)
+      </h1>
+      <p class="text-xs text-slate-400">Giáo viên: <strong>Nguyễn Hoàng Hải Đăng</strong> • Đơn vị: Trường THPT Bình Tân</p>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <div class="bg-slate-800 px-3 py-1.5 rounded-lg border border-slate-700 text-xs">
+        Đang online: <strong id="onlineCount" class="text-emerald-400">0</strong> / 46 học sinh
+      </div>
+      <button onclick="exportToExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs px-4 py-2 rounded-lg transition shadow flex items-center gap-1.5">
+        📊 Xuất Điểm Excel Chuẩn
+      </button>
+    </div>
+  </header>
+
+  <!-- LƯỚI KHUNG HÌNH NHỎ CHỨA ĐỦ 46 EM TRÊN 1 MÀN HÌNH (8 CỘT X 6 HÀNG) -->
+  <main class="flex-1 bg-slate-900/60 border border-slate-800 rounded-xl p-2 overflow-y-auto">
+    <div id="videoGrid" class="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
+      <!-- 46 ô video sẽ tự động hiển thị tại đây -->
+    </div>
+  </main>
+
+  <script>
+    const studentData = {};
+    const maxStudents = 46;
+
+    // Khởi tạo trước 46 ô trống trên lưới màn hình
+    const grid = document.getElementById('videoGrid');
+    for (let i = 1; i <= maxStudents; i++) {
+      const card = document.createElement('div');
+      card.id = `seat-${i}`;
+      card.className = "bg-slate-950 border border-slate-800 rounded-lg p-1 flex flex-col justify-between items-center aspect-video relative";
+      card.innerHTML = `
+        <div class="w-full flex justify-between items-center text-[9px] px-1 text-slate-400">
+          <span class="font-bold">#${i}</span>
+          <span id="name-${i}" class="truncate max-w-[80px]">Chờ kết nối...</span>
+        </div>
+        <div class="w-full h-full flex items-center justify-center bg-slate-900/80 rounded my-0.5 overflow-hidden relative">
+          <video id="vid-${i}" autoplay playsinline class="w-full h-full object-cover hidden"></video>
+          <span id="holder-${i}" class="text-[10px] text-slate-600 font-mono">OFFLINE</span>
+          <span id="violation-tag-${i}" class="hidden absolute top-1 right-1 bg-rose-600 text-white font-bold text-[8px] px-1 rounded animate-bounce">RỜI TAB</span>
+        </div>
+        <div class="w-full flex justify-between text-[8px] text-slate-500 px-1 font-mono">
+          <span id="score-${i}">-- đ</span>
+          <span id="status-${i}">⚪</span>
+        </div>
+      `;
+      grid.appendChild(card);
+    }
+
+    // Khởi tạo Peer máy giáo viên với ID cố định: thptbt-teacher-room
+    const peer = new Peer('thptbt-teacher-room', { debug: 1 });
+
+    peer.on('open', (id) => {
+      console.log('Teacher Dashboard sẵn sàng với ID:', id);
+    });
+
+    // Nhận cuộc gọi camera WebRTC từ học sinh
+    peer.on('call', (call) => {
+      call.answer(); // Chấp nhận luồng camera
+      const meta = call.metadata || {};
+      const stt = parseInt(meta.stt);
+
+      call.on('stream', (remoteStream) => {
+        if (stt && stt <= maxStudents) {
+          const vid = document.getElementById(`vid-${stt}`);
+          const holder = document.getElementById(`holder-${stt}`);
+          const nameSpan = document.getElementById(`name-${stt}`);
+          const statusSpan = document.getElementById(`status-${stt}`);
+
+          vid.srcObject = remoteStream;
+          vid.classList.remove('hidden');
+          holder.classList.add('hidden');
+          nameSpan.innerText = meta.name || `HS ${stt}`;
+          statusSpan.innerText = "🟢";
+
+          studentData[stt] = {
+            stt: stt,
+            name: meta.name || `Học sinh ${stt}`,
+            className: meta.className || "12A3",
+            startTime: new Date().toLocaleTimeString('vi-VN'),
+            submitTime: "--",
+            score: 0,
+            violations: 0
+          };
+          updateOnlineCount();
+        }
+      });
+    });
+
+    // Nhận dữ liệu text (kết nối, rời tab, nộp bài)
+    peer.on('connection', (conn) => {
+      conn.on('data', (data) => {
+        const stt = parseInt(data.stt);
+        if (!stt) return;
+
+        // Báo cờ đỏ rời tab
+        if (data.type === 'violation') {
+          const vTag = document.getElementById(`violation-tag-${stt}`);
+          vTag.classList.remove('hidden');
+          setTimeout(() => vTag.classList.add('hidden'), 3500);
+
+          if (studentData[stt]) {
+            studentData[stt].violations = data.violations;
+          }
+        }
+
+        // Nhận kết quả nộp bài
+        if (data.type === 'submit') {
+          document.getElementById(`score-${stt}`).innerText = `${data.score} đ`;
+          document.getElementById(`status-${stt}`).innerText = "✅";
+          studentData[stt] = {
+            stt: stt,
+            name: data.name,
+            className: data.className,
+            startTime: data.startTime,
+            submitTime: data.submitTime,
+            score: parseFloat(data.score),
+            violations: data.violations
+          };
+        }
+      });
+    });
+
+    function updateOnlineCount() {
+      document.getElementById('onlineCount').innerText = Object.keys(studentData).length;
+    }
+
+    // Xuất file Excel đúng định dạng yêu cầu của Thầy
+    function exportToExcel() {
+      const rows = [];
+      // Tiêu đề cột
+      rows.push(["STT", "Họ và tên", "Lớp", "Thời gian làm bài", "Thời gian nộp bài", "Điểm số", "Số lần vi phạm"]);
+
+      for (let i = 1; i <= maxStudents; i++) {
+        if (studentData[i]) {
+          const s = studentData[i];
+          rows.push([s.stt, s.name, s.className, s.startTime, s.submitTime, s.score, s.violations]);
+        }
+      }
+
+      if (rows.length === 1) {
+        alert("Chưa có dữ liệu bài làm của học sinh để xuất file!");
+        return;
+      }
+
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Bang_Diem_Kiem_Tra");
+      XLSX.writeFile(wb, "Bang_Diem_Kiem_Tra_TinHoc12_THPT_BinhTan.xlsx");
+    }
+  </script>
+</body>
+</html>
